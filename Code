@@ -1,0 +1,231 @@
+// Load the necessary datasets
+var Study_Area = ee.FeatureCollection("users/2018rsce002/Godavari_Subbasin");
+var DEM = ee.Image("USGS/SRTMGL1_003");
+var River = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers");
+
+// Convert the FeatureCollection to a List
+var featureList = Study_Area.toList(Study_Area.size());
+
+// Create empty lists to store the subbasin names, areas, perimeters, and additional parameters
+var names = [];
+var areas = [];
+var perimeters = [];
+var ShapeParams = [];
+
+// Iterate over the features in the list
+for (var i = 0; i < featureList.length().getInfo(); i++) {
+  var feature = ee.Feature(featureList.get(i));
+  
+  var area = feature.geometry().area().divide(1e6);
+  var perimeter = feature.geometry().perimeter().divide(1000);
+  var subbasinName = feature.get('Name');
+  
+  // Add the values to the respective lists
+  names.push(subbasinName);
+  areas.push(area);
+  perimeters.push(perimeter);
+  
+  // Calculate shape parameters
+  var pi=ee.Number.expression('Math.PI', null);
+  var basinLength = ee.Number(1.312).multiply(area.pow(0.568));
+  var ellipticityRatio = pi.multiply(basinLength.pow(2)).divide(ee.Number(4).multiply(area));
+  var formFactor = area.divide(basinLength.pow(2));
+  var shapeFactor = basinLength.pow(2).divide(area);
+  var elongationRatio = ee.Number(2).divide(basinLength).multiply(area.pow(0.5)).divide(pi);
+  var circularityRatio = ee.Number(4).multiply(pi).multiply(area).divide(perimeter.pow(2));
+  var compactnessCoefficient = ee.Number(0.2821).multiply(perimeter).divide(area.pow(0.5));
+  
+  // Create a dictionary with the additional parameters
+  var paramsDict = ee.Dictionary({
+//    'Watershed Area (km²)': area,
+//    'Watershed Perimeter (km)': perimeter,
+    'Watershed Length (km)': basinLength,
+    'Ellipticity Ratio': ellipticityRatio,
+    'Form Factor': formFactor,
+    'Shape Factor': shapeFactor,
+    'Elongation Ratio': elongationRatio,
+    'Circularity Ratio': circularityRatio,
+    'Compactness Coefficient': compactnessCoefficient
+  });
+  
+  ShapeParams.push(paramsDict);
+}
+
+// Print the lists of names, areas, perimeters, and additional parameters
+print('Names:', names);
+print('Areas:', areas);
+print('Perimeters:', perimeters);
+print('Shape Parameters:', ShapeParams);
+//////////Shape Parameter calculation Complete//////////////////////
+
+
+/////////Calculation of Relief Parameters//////////
+
+var DEM = ee.Image("USGS/GTOPO30");
+var Study_Area = ee.FeatureCollection("users/2018rsce002/Godavari_Subbasin");
+
+// Convert the FeatureCollection to a List
+var subbasinList = Study_Area.toList(Study_Area.size());
+
+// Create an empty list to store the shape parameters for each subbasin
+var ReliefParameters = [];
+
+// Iterate over the subbasins in the list
+for (var i = 0; i < subbasinList.length().getInfo(); i++) {
+  var subbasin = ee.Feature(subbasinList.get(i));
+  
+  var Name = subbasin.get('Name');
+  var subbasinGeometry = subbasin.geometry();
+  
+  // Clip DEM to subbasin
+  var clippedDEM = DEM.clip(subbasinGeometry);
+  
+  // Compute minimum and maximum elevations
+  var minElevation = clippedDEM.reduceRegion({
+    reducer: ee.Reducer.min(),
+    geometry: subbasinGeometry,
+    scale: 1000
+  }).get('elevation');
+  
+  var maxElevation = clippedDEM.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: subbasinGeometry,
+    scale: 1000
+  }).get('elevation');
+  
+  // Convert minimum and maximum elevations to numbers
+  minElevation = ee.Number(minElevation);
+  maxElevation = ee.Number(maxElevation);
+  
+  // Compute basin relief
+  var basinRelief = maxElevation.subtract(minElevation);
+  
+  // Compute basin length
+  var basinLength = ee.Number(1.312).multiply(area.pow(0.568));
+  
+  // Compute perimeter
+  var perimeter = subbasinGeometry.perimeter().divide(1000);
+  
+  // Compute relief ratio
+  var reliefRatio = basinRelief.divide(basinLength);
+  
+  // Compute relative relief
+  var relativeRelief = basinRelief.multiply(100).divide(perimeter);
+  
+  // Compute dissection index
+  var imgMax = clippedDEM.reduceRegion({
+    reducer: ee.Reducer.max(),
+    geometry: subbasinGeometry,
+    scale: 1000
+  }).get('elevation');
+  var dissectionIndex = basinRelief.divide(ee.Number(imgMax));
+  
+  // Create an object to store the Relief parameters for the current subbasin
+  var ReliefParams = {
+    'Name': Name,
+    'Relief Ratio': reliefRatio,
+    'Relative Relief': relativeRelief,
+    'Dissection Index': dissectionIndex,
+    'Basin Relief': basinRelief
+  };
+  
+  // Add the Relief parameters object to the list
+  ReliefParameters.push(ReliefParams);
+}
+
+// Print the list of Relief parameters
+print('Relief Parameters:', ReliefParameters);
+
+/////////////////////Drainage Charecteristics//////////////////
+
+////////////////////////////////////////////////////////////////
+// Load the datasets
+//var Study_Area = ee.FeatureCollection("users/2018rsce002/Godavari_Subbasin");
+//var River = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers");
+
+// Extracting and processing the streams for each subbasin
+var subbasins = Study_Area.aggregate_array('Name');
+subbasins.evaluate(function(names) {
+  var drainageCharacteristics = {}; // Changed object name to "Drainage Characteristics"
+  names.forEach(function(name) {
+    // Filter subbasin by name
+    var subbasin = Study_Area.filter(ee.Filter.eq('Name', name));
+    // Extract the river network within the subbasin
+    var riversInSubbasin = River.filterBounds(subbasin.geometry());
+
+    // Calculate total number of streams in the subbasin
+    var numStreams = riversInSubbasin.size();
+
+    // Calculate total length of streams in the subbasin
+    var lengthStreams = riversInSubbasin.map(function(feature) {
+      return feature.set('length', ee.Number(feature.geometry().length().divide(1000)));
+    });
+    var totalLength = lengthStreams.aggregate_sum('length');
+    
+    // Calculate drainage characteristics
+    var area_km = subbasin.geometry().area().divide(1000000); // Convert area to square kilometers
+    var perimeter = subbasin.geometry().perimeter().divide(1000); // Convert perimeter to kilometers
+    var pi = ee.Number(Math.PI);
+    var streamFrequency = numStreams.divide(area_km);
+    var drainageDensity = totalLength.divide(area_km);
+    var drainageIntensity = streamFrequency.divide(drainageDensity);
+    var infiltrationNumber = drainageDensity.multiply(streamFrequency);
+    var lengthOfOverlandFlow = ee.Number(1).divide(drainageDensity.multiply(ee.Number(2)));
+    var constantOfChannelMaintenance = ee.Number(1).divide(drainageDensity);
+    var lemniscateRatio = perimeter.pow(2).multiply(pi).divide(ee.Number(4).multiply(area_km));
+    var ruggednessNumber = drainageDensity.multiply(drainageIntensity);
+    var textureRatio = numStreams.divide(perimeter);
+    
+    // Store results in dictionary
+    drainageCharacteristics[name] = { // Changed object name to "Drainage Characteristics"
+      'Number of Streams(Nu)': numStreams.getInfo(),
+      'Total Stream Length(Lu) in Km': totalLength.getInfo(),
+      'Stream Frequency': streamFrequency.getInfo(),
+      'Drainage Density': drainageDensity.getInfo(),
+      'Drainage Intensity': drainageIntensity.getInfo(),
+      'Infiltration Number': infiltrationNumber.getInfo(),
+      'Length Of Overland Flow': lengthOfOverlandFlow.getInfo(),
+      'Constant Of Channel Maintenance': constantOfChannelMaintenance.getInfo(),
+      'Lemniscate Ratio': lemniscateRatio.getInfo(),
+      'Ruggedness Number': ruggednessNumber.getInfo(),
+      'Texture Ratio': textureRatio.getInfo()
+    };
+  });
+
+  // Print results
+  print('Drainage Characteristics:', drainageCharacteristics); // Changed print statement
+});
+
+// /////////////////////Stream Order///////////////////////////////////////////////
+// // Load the sub-watershed shapefile
+// var Study_Area = ee.FeatureCollection('users/2018rsce002/Godavari_Subbasin');
+// print(Study_Area);
+
+// // Load the river dataset
+// var River = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers");
+
+// // Function to calculate stream order for a sub-basin
+// var calculateStreamOrder = function(subBasin) {
+//   // Filter the sub-basin by its "Name" attribute
+//   var subBasinName = subBasin.get('Name');
+//   var filteredSubBasin = Study_Area.filter(ee.Filter.eq('Name', subBasinName));
+  
+//   // Clip the river dataset to the sub-basin
+//   var clippedRiver = River.clip(filteredSubBasin);
+  
+//   // Perform stream order calculation
+//   var streamOrder = clippedRiver.strahlerOrder(); // You can also use 'hortonOrder()' or 'shreveOrder()'
+  
+//   // Return the sub-basin feature with the stream order property
+//   return filteredSubBasin.set('StreamOrder', streamOrder);
+// };
+
+// // Map over the sub-basins and calculate stream order for each
+// var subBasinsWithStreamOrder = Study_Area.map(calculateStreamOrder);
+
+// // Get the list of stream orders for each sub-basin
+// var streamOrderList = subBasinsWithStreamOrder.aggregate_array('StreamOrder');
+
+// // Print the stream order list
+// print(streamOrderList);
+
